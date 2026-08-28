@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import streamlit as st
+from datetime import datetime, timedelta
 
 @st.cache_data(ttl=120)
 def get_stock_price(ticker: str):
@@ -29,6 +30,29 @@ def get_historical_data(ticker: str, period="6mo"):
         return data.history(period=period)
     except Exception:
         return pd.DataFrame()
+
+def get_recent_dividends(ticker: str, days: int = 30):
+    """Busca proventos (dividendos e JCP) distribuídos recentemente pelo ativo."""
+    formatted_ticker = ticker.strip().upper()
+    if not formatted_ticker.endswith(".SA"):
+        formatted_ticker += ".SA"
+    try:
+        data = yf.Ticker(formatted_ticker)
+        divs = data.dividends
+        if divs.empty:
+            return []
+        
+        # Converte o fuso horário para UTC/ingênuo para comparação correta
+        divs.index = divs.index.tz_localize(None) if divs.index.tz is not None else divs.index
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        recent = divs[divs.index >= cutoff_date]
+        
+        events = []
+        for date, amount in recent.items():
+            events.append({"date": date, "amount": float(amount)})
+        return events
+    except Exception:
+        return []
 
 def calculate_sharpe_ratio(returns_series: pd.Series, risk_free_rate: float = 0.1075) -> float:
     """Calcula o Índice de Sharpe anualizado considerando o CDI."""

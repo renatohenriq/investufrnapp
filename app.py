@@ -1,16 +1,16 @@
 import streamlit as st
 import pandas as pd
+import io
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 from database import init_db, SessionLocal, User, Competition, Participant, Position, Order
-from market_data import get_stock_price, get_historical_data, generate_synthetic_book
+from market_data import get_stock_price, get_historical_data, get_recent_dividends, generate_synthetic_book
 
 st.set_page_config(page_title="InvestUFRN App", layout="wide", page_icon="📈")
 init_db()
 
 # --- CONFIGURAÇÃO DE E-MAILS DE ORGANIZADORES/ADMINISTRADORES ---
-# Insira os e-mails institucionais que terão acesso ao painel de criação de ligas e auditoria
 ADMIN_EMAILS = ["renato.mota@ufrn.br", "admin@ufrn.br"]
 
 if "user" not in st.session_state:
@@ -57,10 +57,9 @@ if not st.session_state.user:
 db = SessionLocal()
 user_data = st.session_state.user
 
-# Recupera competições cadastradas
 competitions = db.query(Competition).all()
 if not competitions and not user_data["is_admin"]:
-    st.warning("Nenhuma competição ativa no momento. Aguarde a abertura da liga pelo professor.")
+    st.warning("Nenhuma competição ativa no momento. Aguarde as instruções do professor.")
     db.close()
     st.stop()
 
@@ -68,7 +67,6 @@ comp_dict = {c.name: c.id for c in competitions}
 selected_comp_name = st.sidebar.selectbox("Competição", list(comp_dict.keys())) if comp_dict else None
 current_comp = db.query(Competition).filter(Competition.id == comp_dict[selected_comp_name]).first() if selected_comp_name else None
 
-# Inscrição automática do aluno na competição selecionada
 current_participant = None
 if current_comp:
     current_participant = db.query(Participant).filter(
@@ -86,7 +84,6 @@ if current_comp:
         db.commit()
         db.refresh(current_participant)
 
-# Abas de Navegação
 tabs = ["📊 Ranking Geral", "💼 Minha Carteira", "⚡ Negociação de Ativos"]
 if user_data["is_admin"]:
     tabs.append("⚙️ Painel do Organizador")
@@ -94,9 +91,7 @@ if user_data["is_admin"]:
 active_tab = st.radio("Navegação", tabs, horizontal=True, label_visibility="collapsed")
 st.markdown("---")
 
-# ==========================================
-# ABA 1: RANKING GERAL (SEM EXPOR CARTEIRAS ALHEIAS)
-# ==========================================
+# ABA 1: RANKING
 if active_tab == "📊 Ranking Geral":
     if not current_comp:
         st.info("Nenhuma competição selecionada.")
@@ -141,9 +136,7 @@ if active_tab == "📊 Ranking Geral":
         use_container_width=True
     )
 
-# ==========================================
 # ABA 2: MINHA CARTEIRA
-# ==========================================
 elif active_tab == "💼 Minha Carteira":
     if not current_participant:
         st.stop()
@@ -207,9 +200,7 @@ elif active_tab == "💼 Minha Carteira":
         else:
             st.write("100% do capital disponível em Caixa.")
 
-# ==========================================
 # ABA 3: NEGOCIAÇÃO DE ATIVOS
-# ==========================================
 elif active_tab == "⚡ Negociação de Ativos":
     st.header("⚡ Mesa de Operações (B3)")
     ticker = st.text_input("Ticker do Ativo (Ex.: PETR4, VALE3, ITUB4, WEGE3)").strip().upper()
@@ -282,19 +273,92 @@ elif active_tab == "⚡ Negociação de Ativos":
                         st.success(f"Ordem de VENDA de {qty}x {ticker} executada com sucesso!")
                         st.rerun()
 
-# ==========================================
-# ABA 4: PAINEL DO ORGANIZADOR (PROFESSOR)
-# ==========================================
+# ABA 4: PAINEL DO ORGANIZADOR
 elif active_tab == "⚙️ Painel do Organizador" and user_data["is_admin"]:
     st.header("⚙️ Painel de Gestão do Organizador")
+
+    col_admin1, col_admin2 = st.columns(2)
+
+    with col_admin1:
+        st.subheader("💰 Processamento de Dividendos")
+        st.caption("Verifica proventos pagos na B3 nos últimos 30 dias e credita automaticamente no caixa de quem detém as ações.")
+        if st.button("Executar Crédito de Dividendos da B3", use_container_width=True):
+            all_active_positions = db.query(Position).filter(Position.quantity > 0).all()
+            credited_count = 0
+            total_div_amount = 0.0
+
+            for pos in all_active_positions:
+                divs = get_recent_dividends(pos.ticker, days=30)
+                for div in divs:
+                    payout = pos.quantity * div["amount"]
+                    pos.participant.cash_balance += payout
+                    credited_count += 1
+                    total_div_amount += payout
+            
+            db.commit()
+            if credited_count > 0:
+                st.success(f"Sucesso! {credited_count} provento(s) creditados somando R$ {total_div_amount:,.2f} no total.")
+            else:
+                st.info("Nenhum novo provento pendente encontrado para os ativos em custódia.")
+            st.rerun()
+
+    with col_admin2:
+        st.subheader("📥 Exportação de Dados para Avaliação")
+        st.caption("Baixe uma planilha Excel com as notas/ranking consolidado e o log de todas as ordens dos alunos.")
+        
+        # Gera o arquivo Excel em memória
+        if current_comp:
+            all_parts = db.query(Participant).filter(Participant.competition_id == current_comp.id).all()
+            export_ranking = []
+            for p in all_parts:
+                eq_inv = sum((get_stock_price(pos.ticker) or pos.avg_price) * pos.quantity for pos in p.positions)
+                tot = p.cash_balance + eq_inv
+                export_ranking.append({
+                    "Aluno": p.user.name,
+                    "E-mail": p.user.email,
+                    "Patrimônio Final (R$)": tot,
+                    "Saldo Caixa (R$)": p.cash_balance,
+                    "Total Investido (R$)": eq_inv,
+                    "Rentabilidade (%)": ((tot / current_comp.initial_cash) - 1) * 100
+                })
+            
+            df_exp_rank = pd.DataFrame(export_ranking)
+            
+            all_ords = db.query(Order).all()
+            df_exp_ords = pd.DataFrame([{
+                "Data/Hora": o.created_at.strftime("%d/%m/%Y %H:%M"),
+                "Aluno": o.participant.user.name,
+                "E-mail": o.participant.user.email,
+                "Tipo": o.side,
+                "Ticker": o.ticker,
+                "Qtd": o.quantity,
+                "Preço": o.execution_price,
+                "Volume (R$)": o.quantity * (o.execution_price or 0.0)
+            } for o in all_ords])
+
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_exp_rank.to_excel(writer, sheet_name='Ranking_Final', index=False)
+                df_exp_ords.to_excel(writer, sheet_name='Historico_Ordens', index=False)
+            
+            st.download_button(
+                label="📊 Baixar Relatório Completo (.xlsx)",
+                data=buffer.getvalue(),
+                file_name=f"investufrn_relatorio_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+    st.markdown("---")
+
     with st.form("new_comp"):
         st.subheader("Criar Nova Competição")
-        c_name = st.text_input("Nome da Competição (Ex.: Liga de Finanças UFRN 2026.2)")
+        c_name = st.text_input("Nome (Ex.: Competição PPGCCon 2026.2)")
         c_cash = st.number_input("Capital Inicial por Aluno (R$)", value=100000.0, step=10000.0)
-        c_start = st.date_input("Data de Início")
-        c_end = st.date_input("Data de Término")
-        c_desc = st.text_area("Regulamento / Limites Operacionais (Ex.: Máximo 25% em uma única ação)")
-        if st.form_submit_button("Publicar Competição"):
+        c_start = st.date_input("Início")
+        c_end = st.date_input("Fim")
+        c_desc = st.text_area("Regras da Liga")
+        if st.form_submit_button("Criar Competição"):
             new_c = Competition(
                 name=c_name, initial_cash=c_cash,
                 start_date=datetime.combine(c_start, datetime.min.time()),
@@ -307,7 +371,7 @@ elif active_tab == "⚙️ Painel do Organizador" and user_data["is_admin"]:
             st.rerun()
 
     st.markdown("---")
-    st.subheader("Auditoria de Transações de Todos os Alunos")
+    st.subheader("Auditoria de Ordens dos Participantes")
     orders_audit = db.query(Order).order_by(Order.created_at.desc()).all()
     if orders_audit:
         audit_data = [{
@@ -320,7 +384,5 @@ elif active_tab == "⚙️ Painel do Organizador" and user_data["is_admin"]:
             "Preço": f"R$ {o.execution_price:.2f}"
         } for o in orders_audit]
         st.dataframe(pd.DataFrame(audit_data), use_container_width=True)
-    else:
-        st.write("Nenhuma ordem transmitida até o momento.")
 
 db.close()

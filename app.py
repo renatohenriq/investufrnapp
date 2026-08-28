@@ -304,9 +304,8 @@ elif active_tab == "⚙️ Painel do Organizador" and user_data["is_admin"]:
 
     with col_admin2:
         st.subheader("📥 Exportação de Dados para Avaliação")
-        st.caption("Baixe uma planilha Excel com as notas/ranking consolidado e o log de todas as ordens dos alunos.")
+        st.caption("Baixe uma planilha Excel com o ranking consolidado e o histórico de todas as ordens dos alunos.")
         
-        # Gera o arquivo Excel em memória
         if current_comp:
             all_parts = db.query(Participant).filter(Participant.competition_id == current_comp.id).all()
             export_ranking = []

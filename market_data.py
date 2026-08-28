@@ -6,13 +6,14 @@ from datetime import datetime, timedelta
 
 @st.cache_data(ttl=120)
 def get_stock_price(ticker: str):
-    """Busca cotação atual na B3 via Yahoo Finance (com cache de 2 minutos)."""
+    """Busca cotação nominal atual na B3 via Yahoo Finance (sem ajuste retroativo)."""
     formatted_ticker = ticker.strip().upper()
     if not formatted_ticker.endswith(".SA"):
         formatted_ticker += ".SA"
     try:
         data = yf.Ticker(formatted_ticker)
-        history = data.history(period="1d")
+        # auto_adjust=False garante o preço nominal real de tela negociado na B3
+        history = data.history(period="1d", auto_adjust=False)
         if not history.empty:
             return float(history["Close"].iloc[-1])
         return None
@@ -21,13 +22,13 @@ def get_stock_price(ticker: str):
 
 @st.cache_data(ttl=600)
 def get_historical_data(ticker: str, period="6mo"):
-    """Busca histórico de preços para gerar o gráfico de cotações."""
+    """Busca histórico de preços nominais para gerar o gráfico de velas."""
     formatted_ticker = ticker.strip().upper()
     if not formatted_ticker.endswith(".SA"):
         formatted_ticker += ".SA"
     try:
         data = yf.Ticker(formatted_ticker)
-        return data.history(period=period)
+        return data.history(period=period, auto_adjust=False)
     except Exception:
         return pd.DataFrame()
 
@@ -42,7 +43,7 @@ def get_recent_dividends(ticker: str, days: int = 30):
         if divs.empty:
             return []
         
-        # Converte o fuso horário para UTC/ingênuo para comparação correta
+        # Converte o fuso horário para UTC/ingênuo para comparação segura
         divs.index = divs.index.tz_localize(None) if divs.index.tz is not None else divs.index
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         recent = divs[divs.index >= cutoff_date]

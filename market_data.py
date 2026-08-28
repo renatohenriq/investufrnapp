@@ -7,12 +7,13 @@ from datetime import datetime, timedelta
 @st.cache_data(ttl=120)
 def get_stock_price(ticker: str):
     """Busca cotação nominal atual na B3 via Yahoo Finance (sem ajuste retroativo)."""
+    if not ticker:
+        return None
     formatted_ticker = ticker.strip().upper()
     if not formatted_ticker.endswith(".SA"):
         formatted_ticker += ".SA"
     try:
         data = yf.Ticker(formatted_ticker)
-        # auto_adjust=False garante o preço nominal real de tela negociado na B3
         history = data.history(period="1d", auto_adjust=False)
         if not history.empty:
             return float(history["Close"].iloc[-1])
@@ -22,7 +23,9 @@ def get_stock_price(ticker: str):
 
 @st.cache_data(ttl=600)
 def get_historical_data(ticker: str, period="6mo"):
-    """Busca histórico de preços nominais para gerar o gráfico de velas."""
+    """Busca histórico de preços nominais para gerar gráfico de velas."""
+    if not ticker:
+        return pd.DataFrame()
     formatted_ticker = ticker.strip().upper()
     if not formatted_ticker.endswith(".SA"):
         formatted_ticker += ".SA"
@@ -33,7 +36,9 @@ def get_historical_data(ticker: str, period="6mo"):
         return pd.DataFrame()
 
 def get_recent_dividends(ticker: str, days: int = 30):
-    """Busca proventos (dividendos e JCP) distribuídos recentemente pelo ativo."""
+    """Busca proventos recentes na B3."""
+    if not ticker:
+        return []
     formatted_ticker = ticker.strip().upper()
     if not formatted_ticker.endswith(".SA"):
         formatted_ticker += ".SA"
@@ -43,7 +48,6 @@ def get_recent_dividends(ticker: str, days: int = 30):
         if divs.empty:
             return []
         
-        # Converte o fuso horário para UTC/ingênuo para comparação segura
         divs.index = divs.index.tz_localize(None) if divs.index.tz is not None else divs.index
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         recent = divs[divs.index >= cutoff_date]
@@ -55,17 +59,8 @@ def get_recent_dividends(ticker: str, days: int = 30):
     except Exception:
         return []
 
-def calculate_sharpe_ratio(returns_series: pd.Series, risk_free_rate: float = 0.1075) -> float:
-    """Calcula o Índice de Sharpe anualizado considerando o CDI."""
-    if len(returns_series) < 5 or returns_series.std() == 0:
-        return 0.0
-    daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
-    excess_returns = returns_series - daily_rf
-    sharpe = np.sqrt(252) * (excess_returns.mean() / returns_series.std())
-    return round(float(sharpe), 2)
-
 def generate_synthetic_book(ticker: str, current_price: float):
-    """Gera o Book de Ofertas em torno da cotação de mercado."""
+    """Gera Book de Ofertas simplificado em torno do preço de mercado."""
     if not current_price:
         return pd.DataFrame(), pd.DataFrame()
     

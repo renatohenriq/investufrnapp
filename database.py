@@ -1,12 +1,34 @@
 import os
 import hashlib
 from datetime import datetime
+import streamlit as st
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///investufrnapp.db")
+DATABASE_URL = None
+try:
+    if hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
+        DATABASE_URL = st.secrets["DATABASE_URL"]
+except Exception:
+    pass
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+if not DATABASE_URL:
+    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///investufrnapp.db")
+
+# Garante a utilização explícita do psycopg2 para compatibilidade direta com SQLAlchemy
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+engine_kwargs = {}
+if "sqlite" in DATABASE_URL:
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    engine_kwargs["pool_pre_ping"] = True
+    engine_kwargs["pool_recycle"] = 300
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -82,8 +104,8 @@ class Order(Base):
     id = Column(Integer, primary_key=True, index=True)
     participant_id = Column(Integer, ForeignKey("participants.id"), nullable=False)
     ticker = Column(String(10), nullable=False)
-    side = Column(String(4), nullable=False) # BUY / SELL
-    order_type = Column(String(10), nullable=False) # MARKET / LIMIT / STOP
+    side = Column(String(4), nullable=False)
+    order_type = Column(String(10), nullable=False)
     quantity = Column(Integer, nullable=False)
     target_price = Column(Float, nullable=True)
     execution_price = Column(Float, nullable=True)

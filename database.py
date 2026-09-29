@@ -15,11 +15,11 @@ except Exception:
 if not DATABASE_URL:
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///investufrnapp.db")
 
-# Garante a utilização explícita do psycopg2 para compatibilidade direta com SQLAlchemy
+# Garante o driver psycopg v3 compatível
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
-elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgresql+psycopg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine_kwargs = {}
 if "sqlite" in DATABASE_URL:
@@ -27,6 +27,8 @@ if "sqlite" in DATABASE_URL:
 else:
     engine_kwargs["pool_pre_ping"] = True
     engine_kwargs["pool_recycle"] = 300
+    # Desativa prepared statements para compatibilidade com o Transaction Pooler do Supabase (porta 6543)
+    engine_kwargs["connect_args"] = {"prepare_threshold": None}
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
